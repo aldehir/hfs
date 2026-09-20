@@ -29,11 +29,17 @@ func (a *app) remote(ctx context.Context) (*daemon.RemoteClient, error) {
 	if token == "" {
 		return nil, errors.New("no hfsd token: run `hfs token init`, or pass --ssh to go through Dev Mode")
 	}
-	info, err := a.hf.Info(ctx)
-	if err != nil {
-		return nil, err
+	// Set for the ansible plugin's child processes, to skip a Hub API round
+	// trip on every task.
+	host := os.Getenv("HFS_HOST")
+	if host == "" {
+		info, err := a.hf.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		host = info.Host
 	}
-	return daemon.NewRemoteClient(info.Host, a.hf.Token(), token), nil
+	return daemon.NewRemoteClient(host, a.hf.Token(), token), nil
 }
 
 // useSSH reports whether to go through Dev Mode SSH instead of hfsd.

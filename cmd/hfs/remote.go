@@ -123,8 +123,12 @@ func (a *app) playbook(ctx context.Context, name string, o provisionOpts, extraA
 	if err != nil {
 		return err
 	}
+	info, err := a.hf.Info(ctx)
+	if err != nil {
+		return err
+	}
 	vars["hfsd_managed"] = false
-	return pb.RunHfsd(ctx, a.hf.Space(), self, a.cfg.Path())
+	return pb.RunHfsd(ctx, a.hf.Space(), info.Host, self, a.cfg.Path())
 }
 
 // waitHfsd waits for hfsd to come back after it re-execs into a new binary.

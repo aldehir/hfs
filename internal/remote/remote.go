@@ -123,9 +123,9 @@ func (t Target) Run(ctx context.Context, p Playbook) error {
 
 // RunHfsd executes the playbook through the hfsd connection plugin, which
 // calls back into the hfs binary for every command and file transfer.
-func (p Playbook) RunHfsd(ctx context.Context, space, hfsBin, configPath string) error {
+func (p Playbook) RunHfsd(ctx context.Context, space, host, hfsBin, configPath string) error {
 	args := []string{"-i", space + ",", "-c", "hfsd"}
-	return p.run(ctx, args, []string{"HFS_BIN=" + hfsBin, "HFS_CONFIG=" + configPath})
+	return p.run(ctx, args, []string{"HFS_BIN=" + hfsBin, "HFS_CONFIG=" + configPath, "HFS_HOST=" + host})
 }
 
 func (p Playbook) run(ctx context.Context, args, env []string) error {
