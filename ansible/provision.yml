@@ -4,4 +4,3 @@
     - { role: hfsd, tags: [always], when: hfsd_managed }
     - { role: llama_build, tags: [build] }
     - { role: server, tags: [server] }
-    - { role: devenv, tags: [dev] }
