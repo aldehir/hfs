@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,21 @@ func remoteError(resp *http.Response) error {
 // Exec runs argv on the Space, wiring up the given streams, and returns the
 // command's exit code.
 func (c *RemoteClient) Exec(ctx context.Context, req ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return c.exec(ctx, req, stdin, stdout, stderr, nil)
+}
+
+// ExecTTY runs argv on a remote pseudo-terminal. Sizes sent on resize are
+// forwarded as {rows, cols}. The caller owns putting its own terminal in raw
+// mode.
+func (c *RemoteClient) ExecTTY(ctx context.Context, req ExecRequest, stdin io.Reader, stdout io.Writer, resize <-chan [2]uint16) (int, error) {
+	req.TTY = true
+	return c.exec(ctx, req, stdin, stdout, io.Discard, resize)
+}
+
+func (c *RemoteClient) exec(ctx context.Context, req ExecRequest, stdin io.Reader, stdout, stderr io.Writer, resize <-chan [2]uint16) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	conn, resp, err := websocket.Dial(ctx, c.base+"/exec", &websocket.DialOptions{HTTPHeader: c.header.Clone()})
 	if err != nil {
 		if resp != nil && resp.StatusCode >= 400 {
@@ -105,6 +121,20 @@ func (c *RemoteClient) Exec(ctx context.Context, req ExecRequest, stdin io.Reade
 			}
 		}
 		conn.Write(ctx, websocket.MessageBinary, []byte{ChanStdin})
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case size := <-resize:
+				frame := []byte{ChanResize, 0, 0, 0, 0}
+				binary.BigEndian.PutUint16(frame[1:3], size[0])
+				binary.BigEndian.PutUint16(frame[3:5], size[1])
+				conn.Write(ctx, websocket.MessageBinary, frame)
+			}
+		}
 	}()
 
 	for {

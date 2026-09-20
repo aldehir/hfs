@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/creack/pty"
 )
 
 const (
@@ -33,6 +35,8 @@ const (
 	ChanStdin  = 0
 	ChanStdout = 1
 	ChanStderr = 2
+	// ChanResize carries a terminal size: rows then cols, big-endian uint16s.
+	ChanResize = 3
 
 	pingInterval = 30 * time.Second
 	execChunk    = 32 * 1024
@@ -43,6 +47,13 @@ type ExecRequest struct {
 	Argv []string          `json:"argv"`
 	Env  map[string]string `json:"env,omitempty"`
 	Dir  string            `json:"dir,omitempty"`
+
+	// TTY runs the command on a pseudo-terminal: stderr is folded into
+	// stdout, and the client may send resize frames.
+	TTY  bool   `json:"tty,omitempty"`
+	Term string `json:"term,omitempty"`
+	Rows uint16 `json:"rows,omitempty"`
+	Cols uint16 `json:"cols,omitempty"`
 }
 
 // ExecResult is the last (text) frame the server sends on /exec.
@@ -111,17 +122,39 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
 
 	finish := func(res ExecResult) {
 		b, _ := json.Marshal(res)
 		c.Write(ctx, websocket.MessageText, b)
 		c.Close(websocket.StatusNormalClosure, "")
 	}
-	if err := cmd.Start(); err != nil {
+
+	var (
+		stdin   io.WriteCloser
+		outputs = map[byte]io.Reader{}
+		ptmx    *os.File
+		hangup  = syscall.SIGTERM
+	)
+	if req.TTY {
+		if req.Term == "" {
+			req.Term = "xterm-256color"
+		}
+		cmd.Env = append(cmd.Env, "TERM="+req.Term)
+		// pty.Start makes the command a session leader on the new terminal,
+		// so its pid doubles as the process group to signal.
+		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{Rows: max(req.Rows, 24), Cols: max(req.Cols, 80)})
+		if err == nil {
+			defer ptmx.Close()
+			stdin, outputs[ChanStdout], hangup = ptmx, ptmx, syscall.SIGHUP
+		}
+	} else {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		stdin, _ = cmd.StdinPipe()
+		outputs[ChanStdout], _ = cmd.StdoutPipe()
+		outputs[ChanStderr], _ = cmd.StderrPipe()
+		err = cmd.Start()
+	}
+	if err != nil {
 		finish(ExecResult{ExitCode: 127, Error: err.Error()})
 		return
 	}
@@ -148,27 +181,35 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var pumps sync.WaitGroup
-	pumps.Add(2)
-	go func() { defer pumps.Done(); pump(ChanStdout, stdout) }()
-	go func() { defer pumps.Done(); pump(ChanStderr, stderr) }()
+	for channel, src := range outputs {
+		pumps.Add(1)
+		go func() { defer pumps.Done(); pump(channel, src) }()
+	}
 
 	// Reading also services pongs, so this loop runs for the whole session.
 	go func() {
-		defer stdin.Close()
 		for {
 			typ, data, err := c.Read(ctx)
 			if err != nil {
 				cancel()
 				return
 			}
-			if typ != websocket.MessageBinary || len(data) == 0 || data[0] != ChanStdin {
+			if typ != websocket.MessageBinary || len(data) == 0 {
 				continue
 			}
-			if len(data) == 1 {
+			switch {
+			case data[0] == ChanResize && ptmx != nil && len(data) == 5:
+				pty.Setsize(ptmx, &pty.Winsize{
+					Rows: binary.BigEndian.Uint16(data[1:3]),
+					Cols: binary.BigEndian.Uint16(data[3:5]),
+				})
+			case data[0] != ChanStdin:
+			case len(data) > 1:
+				stdin.Write(data[1:])
+			case ptmx == nil:
+				// EOF. A terminal has no such thing; the user types ^D.
 				stdin.Close()
-				continue
 			}
-			stdin.Write(data[1:])
 		}
 	}()
 
@@ -188,7 +229,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		<-ctx.Done()
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		syscall.Kill(-cmd.Process.Pid, hangup)
 		time.AfterFunc(5*time.Second, func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 	}()
 

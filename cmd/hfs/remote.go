@@ -5,21 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aldehir/hfs/internal/daemon"
 	"github.com/aldehir/hfs/internal/hf"
 	"github.com/aldehir/hfs/internal/remote"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 const (
 	remoteHfsd        = "/home/user/.hfs/bin/hfsd"
 	remoteHfsdPersist = "/data/hfs/hfsd"
 	defaultSession    = "dev"
+	remoteWorkdir     = "/app"
 )
 
 type provisionOpts struct {
@@ -215,16 +219,73 @@ func (a *app) benchCmd() *cobra.Command {
 
 func (a *app) sshCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ssh [-- command]",
-		Short: "Open a tmux session on the Space, or run a command",
+		Use:     "ssh [-- command]",
+		Aliases: []string{"shell"},
+		Short:   "Open a tmux session on the Space, or run a command on a terminal",
+		Long: "Open a tmux session on the Space, or run a command on a terminal.\n\n" +
+			"Goes through hfsd's websocket by default, so it needs no Dev Mode and isn't\n" +
+			"dropped when idle. With --ssh it uses the Dev Mode SSH gateway.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, command := passthrough(cmd, args)
 			if len(command) == 0 {
 				command = []string{"tmux", "new", "-A", "-s", defaultSession}
 			}
-			return a.interactive(cmd.Context(), true, command...)
+			if a.useSSH() {
+				return a.interactive(cmd.Context(), true, command...)
+			}
+			return a.terminal(cmd.Context(), command)
 		},
 	}
+}
+
+// terminal runs argv on a remote pty attached to the local terminal.
+func (a *app) terminal(ctx context.Context, argv []string) error {
+	rc, err := a.remote(ctx)
+	if err != nil {
+		return err
+	}
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return errors.New("stdin is not a terminal; use `hfs exec` for non-interactive commands")
+	}
+	cols, rows, err := term.GetSize(fd)
+	if err != nil {
+		return err
+	}
+
+	resize := make(chan [2]uint16, 1)
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+	go func() {
+		for range winch {
+			if c, r, err := term.GetSize(fd); err == nil {
+				resize <- [2]uint16{uint16(r), uint16(c)}
+			}
+		}
+	}()
+
+	// Raw mode hands every keystroke, ^C included, to the remote side.
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return err
+	}
+	code, err := rc.ExecTTY(ctx, daemon.ExecRequest{
+		Argv: argv,
+		Dir:  remoteWorkdir,
+		Term: os.Getenv("TERM"),
+		Rows: uint16(rows),
+		Cols: uint16(cols),
+	}, os.Stdin, os.Stdout, resize)
+	term.Restore(fd, state)
+
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return exitError{code}
+	}
+	return nil
 }
 
 func (a *app) ctlCmd() *cobra.Command {

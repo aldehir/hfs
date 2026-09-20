@@ -89,6 +89,9 @@ func serveCmd(home *string) *cobra.Command {
 				Quit:     make(chan struct{}),
 				Reexec:   make(chan string, 1),
 			}
+			// Managed processes and remote shells inherit our environment;
+			// the key to this API shouldn't be in it.
+			os.Unsetenv("HFSD_TOKEN")
 			if srv.Token == "" {
 				log.Print("remote api disabled: no $HFSD_TOKEN or token file")
 			}
