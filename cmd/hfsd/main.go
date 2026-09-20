@@ -141,7 +141,7 @@ func serveCmd(home *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", ":8000", "public http address")
-	cmd.Flags().StringVar(&upstreamPrefix, "upstream-prefix", "/ui", "llama-server's --api-prefix; its web ui is served there and other paths are rewritten into it")
+	cmd.Flags().StringVar(&upstreamPrefix, "upstream-prefix", "/llama", "llama-server's --api-prefix; its web ui is served there and other paths are rewritten into it")
 	cmd.Flags().StringVar(&persist, "persist", "/data/hfs/hfsd", "persistent copy of the binary, updated on upgrade")
 	cmd.Flags().StringVar(&upstream, "upstream", "127.0.0.1:8080", "llama-server address to proxy to")
 	return cmd
