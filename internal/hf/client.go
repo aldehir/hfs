@@ -149,8 +149,15 @@ func (c *Client) Pause(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/pause", nil, nil)
 }
 
-func (c *Client) Restart(ctx context.Context) error {
-	return c.do(ctx, http.MethodPost, "/restart", nil, nil)
+// Restart restarts the Space on its current image. With factory set it
+// rebuilds the image from the repo's HEAD first, which is the only way a Dev
+// Mode Space picks up pushed commits.
+func (c *Client) Restart(ctx context.Context, factory bool) error {
+	suffix := "/restart"
+	if factory {
+		suffix += "?factory=true"
+	}
+	return c.do(ctx, http.MethodPost, suffix, nil, nil)
 }
 
 // SetSleepTime sets the idle timeout in seconds; -1 means never sleep.

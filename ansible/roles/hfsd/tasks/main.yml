@@ -33,7 +33,7 @@
       Wait for them (`hfs logs NAME -f`) or stop them (`hfs ctl stop NAME`).
   vars:
     hfsd_jobs: >-
-      {{ hfsd_ps.stdout | from_json
+      {{ (hfsd_ps.stdout if hfsd_ps.rc == 0 else '[]') | from_json
          | selectattr('state', 'in', ['running', 'backoff'])
          | selectattr('spec.restart', 'equalto', 'never')
          | map(attribute='spec.name') | list }}

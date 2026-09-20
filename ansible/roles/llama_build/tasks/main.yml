@@ -124,6 +124,13 @@
         mkdir -p {{ llama_cached }} && cp -a {{ llama_bin }}/. {{ llama_cached }}/
       when: not llama_is_dirty
 
+# The bucket mount behind /data drops the execute bit.
+- name: Make binaries executable
+  ansible.builtin.file:
+    path: "{{ llama_bin }}/{{ item }}"
+    mode: "0755"
+  loop: "{{ llama_targets }}"
+
 - name: Point current at {{ llama_bin | basename }}
   ansible.builtin.file:
     src: "{{ llama_bin }}"

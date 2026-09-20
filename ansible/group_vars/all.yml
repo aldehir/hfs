@@ -39,3 +39,7 @@ server_health_timeout: 1800
 # llama-bench
 bench_args: []
 bench_dir: /data/bench
+
+# Dev environment
+devenv_nvim_repo: https://github.com/aldehir/nvim-config2.git
+devenv_nvim_dir: /home/user/.config/nvim

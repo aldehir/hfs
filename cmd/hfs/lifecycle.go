@@ -37,6 +37,8 @@ func (a *app) upCmd() *cobra.Command {
 		hardware    string
 		sleep       string
 		noProvision bool
+		restart     bool
+		rebuild     bool
 		timeout     time.Duration
 		opts        provisionOpts
 	)
@@ -84,14 +86,19 @@ func (a *app) upCmd() *cobra.Command {
 					return err
 				}
 			}
-			if rt.Stage != "RUNNING" && !startingStages[rt.Stage] {
-				fmt.Println("restarting space")
-				if err := a.hf.Restart(ctx); err != nil {
+			restart = restart || rebuild
+			if restart || (rt.Stage != "RUNNING" && !startingStages[rt.Stage]) {
+				if rebuild {
+					fmt.Println("rebuilding image and restarting space")
+				} else {
+					fmt.Println("restarting space")
+				}
+				if err := a.hf.Restart(ctx, rebuild); err != nil {
 					return err
 				}
 			}
 
-			if err := a.waitRunning(ctx, timeout); err != nil {
+			if err := a.waitRunning(ctx, timeout, restart); err != nil {
 				return err
 			}
 			target, err := a.target(ctx)
@@ -110,16 +117,22 @@ func (a *app) upCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hardware, "hw", "", "hardware flavor to request (e.g. l40sx1, cpu-basic)")
 	cmd.Flags().StringVar(&sleep, "sleep", "", "idle sleep time (e.g. 30m, 1h, never)")
+	cmd.Flags().BoolVar(&restart, "restart", false, "restart even if running (same image; wipes the container)")
+	cmd.Flags().BoolVar(&rebuild, "rebuild", false, "factory reboot: rebuild the image from the Space repo's HEAD, then restart (a Dev Mode Space ignores pushes until this)")
 	cmd.Flags().BoolVar(&noProvision, "no-provision", false, "bring the Space up without running ansible")
 	cmd.Flags().DurationVar(&timeout, "timeout", 20*time.Minute, "how long to wait for the Space to reach RUNNING")
 	opts.bind(cmd)
 	return cmd
 }
 
-func (a *app) waitRunning(ctx context.Context, timeout time.Duration) error {
+// waitRunning polls until the Space is RUNNING with Dev Mode. After a restart
+// the API keeps reporting the old container as RUNNING for a moment, so
+// leaveFirst waits for the stage to change before trusting it.
+func (a *app) waitRunning(ctx context.Context, timeout time.Duration, leaveFirst bool) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	last := ""
+	grace := time.Now().Add(time.Minute)
 	for {
 		rt, err := a.hf.Runtime(ctx)
 		if err != nil {
@@ -130,7 +143,10 @@ func (a *app) waitRunning(ctx context.Context, timeout time.Duration) error {
 			last = rt.Stage
 		}
 		// Dev Mode is what gives us SSH, so RUNNING alone isn't enough.
-		if rt.Stage == "RUNNING" && rt.DevMode {
+		if rt.Stage != "RUNNING" {
+			leaveFirst = false
+		}
+		if rt.Stage == "RUNNING" && rt.DevMode && (!leaveFirst || time.Now().After(grace)) {
 			return nil
 		}
 		if failedStages[rt.Stage] {
