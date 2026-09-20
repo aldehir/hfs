@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -119,7 +120,7 @@ func (a *app) playbook(ctx context.Context, name string, o provisionOpts, extraA
 		return fmt.Errorf("upgrade hfsd: %w", err)
 	} else if upgraded {
 		fmt.Println("upgraded hfsd")
-		if err := a.waitHfsd(ctx, rc); err != nil {
+		if err := a.waitHfsdVersion(ctx, rc); err != nil {
 			return err
 		}
 	}
@@ -135,7 +136,35 @@ func (a *app) playbook(ctx context.Context, name string, o provisionOpts, extraA
 	return pb.RunHfsd(ctx, a.hf.Space(), info.Host, self, a.cfg.Path())
 }
 
-// waitHfsd waits for hfsd to come back after it re-execs into a new binary.
+// waitHfsdVersion waits until the running hfsd is the local binary. Just
+// asking whether hfsd answers would race the re-exec and hear from the old one.
+func (a *app) waitHfsdVersion(ctx context.Context, rc *daemon.RemoteClient) error {
+	b, err := os.ReadFile(a.cfg.HfsdBinary)
+	if err != nil {
+		return err
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(b))
+
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	var last error
+	for {
+		got, err := rc.Version(ctx)
+		if err == nil && got == want {
+			return nil
+		}
+		if err != nil {
+			last = err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("hfsd did not come back after upgrading: %v", last)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// waitHfsd waits for hfsd to answer, e.g. after the Space starts.
 func (a *app) waitHfsd(ctx context.Context, rc *daemon.RemoteClient) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

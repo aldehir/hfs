@@ -128,7 +128,13 @@ func serveCmd(home *string) *cobra.Command {
 			mgr.Shutdown()
 			daemon.Shutdown(context.Background(), control, public)
 			if reexec != "" {
-				return syscall.Exec(reexec, os.Args, os.Environ())
+				// The token was dropped from our environment at startup; the
+				// next hfsd needs it back.
+				env := os.Environ()
+				if token := srv.Token; token != "" {
+					env = append(env, "HFSD_TOKEN="+token)
+				}
+				return syscall.Exec(reexec, os.Args, env)
 			}
 			return nil
 		},
