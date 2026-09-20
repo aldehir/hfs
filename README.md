@@ -26,6 +26,7 @@ hfs logs [name] [-f]      hfsd process log: llama-server (default), build, bench
 
 ```sh
 make            # bin/hfs (local) and bin/hfsd (static linux/amd64)
+mkdir -p ~/.config/hfs && cp hfs.example.yml hfs.yml   # then edit
 mkdir -p ~/.config/hfs && ln -s "$PWD/hfs.yml" ~/.config/hfs/hfs.yml
 ```
 

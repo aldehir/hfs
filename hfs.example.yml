@@ -1,0 +1,7 @@
+# Copy to hfs.yml (gitignored) and fill in.
+space: NAMESPACE/SPACE-NAME
+profile: qwen3.6-27b
+
+# Only needed for --ssh (Dev Mode) access.
+ssh:
+  identity_file: ~/.ssh/id_ed25519
