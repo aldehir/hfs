@@ -189,7 +189,7 @@ func (s *Server) Public() http.Handler {
 	proxy.ErrorLog = log.New(io.Discard, "", 0)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("X-Upstream-Status", "offline")
-		s.statusPage(w)
+		s.statusPage(w, true)
 	}
 
 	// llama-server has no business seeing the hfsd token.
@@ -206,7 +206,7 @@ func (s *Server) Public() http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { s.statusPage(w) })
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { s.statusPage(w, false) })
 	mux.Handle(RemotePrefix+"/", s.Remote())
 	if s.UpstreamPrefix != "" {
 		mux.Handle("GET "+s.UpstreamPrefix, http.RedirectHandler(s.UpstreamPrefix+"/", http.StatusPermanentRedirect))
@@ -215,14 +215,26 @@ func (s *Server) Public() http.Handler {
 	return mux
 }
 
-func (s *Server) statusPage(w http.ResponseWriter) {
+// statusPage lists the managed processes. It also stands in for llama-server
+// when the proxy can't reach it, where it says so and keeps reloading until
+// the real page takes over.
+func (s *Server) statusPage(w http.ResponseWriter, offline bool) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, "<!doctype html><title>hfsd</title><style>body{font:14px monospace;margin:2em}td{padding-right:2em}</style><h3>hfsd</h3><table>")
+	w.Header().Set("Cache-Control", "no-store")
+	fmt.Fprint(w, "<!doctype html><title>hfsd</title>")
+	if offline {
+		fmt.Fprint(w, `<meta http-equiv="refresh" content="5">`)
+	}
+	fmt.Fprint(w, "<style>body{font:14px monospace;margin:2em}td{padding-right:2em}</style><h3>hfsd</h3>")
+	if offline {
+		fmt.Fprint(w, "<p><b>llama-server isn't answering yet</b> (not started, or still loading the model). This page reloads until it is.")
+	}
+	fmt.Fprint(w, "<table>")
 	for _, st := range s.Manager.List() {
 		fmt.Fprintf(w, "<tr><td>%s<td>%s", html.EscapeString(st.Spec.Name), st.State)
 	}
 	fmt.Fprint(w, "</table>")
-	if s.UpstreamPrefix != "" {
+	if s.UpstreamPrefix != "" && !offline {
 		fmt.Fprintf(w, `<p><a href="%s/">llama.cpp web ui</a>`, html.EscapeString(s.UpstreamPrefix))
 	}
 }
