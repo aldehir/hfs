@@ -91,7 +91,7 @@ llama_ref: my-branch            # or llama_pr: 12345
 model: ggml-org/Qwen3.6-27B-GGUF:Q4_K_M
 server_args:
   - [-c, 262144]
-  - --no-mmap
+  - [--load-mode, none]
 ```
 
 Override per run with `--repo`, `--ref`, `--pr`, `--model`. Anything after `--`

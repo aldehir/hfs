@@ -1,11 +1,11 @@
-llama_repo: aldehir/llama.cpp
-llama_ref: qwen3-specialized-parser
+llama_repo: ggml-org/llama.cpp
+llama_ref: master
 
 model: ggml-org/Qwen3.6-27B-GGUF:Q4_K_M
 server_args:
   - [-c, 262144]
   - [-np, 1]
-  - --no-mmap
+  - [--load-mode, none]
   - --no-mmproj
   - [--spec-type, draft-mtp]
   - [--spec-draft-n-max, 3]
