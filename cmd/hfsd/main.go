@@ -71,7 +71,7 @@ func main() {
 }
 
 func serveCmd(home *string) *cobra.Command {
-	var listen, upstream, persist string
+	var listen, upstream, upstreamPrefix, persist string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the daemon",
@@ -82,12 +82,13 @@ func serveCmd(home *string) *cobra.Command {
 				return err
 			}
 			srv := &daemon.Server{
-				Manager:  mgr,
-				Upstream: upstream,
-				Token:    remoteToken(persist),
-				Persist:  persist,
-				Quit:     make(chan struct{}),
-				Reexec:   make(chan string, 1),
+				Manager:        mgr,
+				Upstream:       upstream,
+				UpstreamPrefix: strings.TrimRight(upstreamPrefix, "/"),
+				Token:          remoteToken(persist),
+				Persist:        persist,
+				Quit:           make(chan struct{}),
+				Reexec:         make(chan string, 1),
 			}
 			// Managed processes and remote shells inherit our environment;
 			// the key to this API shouldn't be in it.
@@ -140,6 +141,7 @@ func serveCmd(home *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", ":8000", "public http address")
+	cmd.Flags().StringVar(&upstreamPrefix, "upstream-prefix", "/ui", "llama-server's --api-prefix; its web ui is served there and other paths are rewritten into it")
 	cmd.Flags().StringVar(&persist, "persist", "/data/hfs/hfsd", "persistent copy of the binary, updated on upgrade")
 	cmd.Flags().StringVar(&upstream, "upstream", "127.0.0.1:8080", "llama-server address to proxy to")
 	return cmd

@@ -27,7 +27,7 @@
     - name: Poll /health
       ansible.builtin.shell: |
         for _ in {1..20}; do
-          curl -fsS -o /dev/null http://{{ server_host }}:{{ server_port }}/health && exit 0
+          curl -fsS -o /dev/null http://{{ server_host }}:{{ server_port }}{{ server_prefix }}/health && exit 0
           state=$({{ hfsd }} status llama-server)
           [[ "$state" == running* || "$state" == backoff* ]] || { echo "llama-server is $state"; exit 1; }
           sleep 3

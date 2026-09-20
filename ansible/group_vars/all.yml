@@ -34,7 +34,10 @@ server_env_defaults:
   LLAMA_CACHE: /data/cache
   HF_HOME: /data/.huggingface
 server_env_args: "{{ (server_env_defaults | combine(server_env)).items() | map('join', '=') | map('regex_replace', '^', '--env=') | list }}"
-server_argv: "{{ ['--host', server_host, '--port', server_port | string, '-hf', model] + (server_args | flatten | map('string') | list) }}"
+# Must match hfsd's --upstream-prefix: the web UI is served under it, and hfsd
+# rewrites root API paths (/v1/...) into it.
+server_prefix: /ui
+server_argv: "{{ ['--host', server_host, '--port', server_port | string, '--api-prefix', server_prefix, '-hf', model] + (server_args | flatten | map('string') | list) }}"
 server_health_timeout: 1800
 
 # llama-bench

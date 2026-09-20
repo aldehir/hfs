@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -94,4 +95,28 @@ func TestRemoteProcsAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+}
+
+func TestUpstreamPrefix(t *testing.T) {
+	var got []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Path)
+	}))
+	defer upstream.Close()
+
+	srv := &Server{Manager: newTestManager(t), Upstream: strings.TrimPrefix(upstream.URL, "http://"), UpstreamPrefix: "/ui"}
+	front := httptest.NewServer(srv.Public())
+	defer front.Close()
+
+	for _, path := range []string{"/v1/models", "/ui/", "/ui/v1/models", "/uix", "/health"} {
+		resp, err := http.Get(front.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	want := []string{"/ui/v1/models", "/ui/", "/ui/v1/models", "/ui/uix", "/ui/health"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("upstream saw %v, want %v", got, want)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,10 @@ type applyResponse struct {
 type Server struct {
 	Manager  *Manager
 	Upstream string
+	// UpstreamPrefix is llama-server's --api-prefix. Its web UI lives there,
+	// which leaves "/" free for the status page; API paths outside the prefix
+	// are rewritten into it, so clients still use /v1/... at the root.
+	UpstreamPrefix string
 	// Token guards the remote API; empty disables it.
 	Token string
 	// Persist is where an upgrade leaves a copy of the binary for the next boot.
@@ -190,6 +195,12 @@ func (s *Server) Public() http.Handler {
 	// llama-server has no business seeing the hfsd token.
 	director := proxy.Director
 	proxy.Director = func(r *http.Request) {
+		if p := s.UpstreamPrefix; p != "" && r.URL.Path != p && !strings.HasPrefix(r.URL.Path, p+"/") {
+			r.URL.Path = p + r.URL.Path
+			if r.URL.RawPath != "" {
+				r.URL.RawPath = p + r.URL.RawPath
+			}
+		}
 		director(r)
 		r.Header.Del(TokenHeader)
 	}
@@ -197,6 +208,9 @@ func (s *Server) Public() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { s.statusPage(w) })
 	mux.Handle(RemotePrefix+"/", s.Remote())
+	if s.UpstreamPrefix != "" {
+		mux.Handle("GET "+s.UpstreamPrefix, http.RedirectHandler(s.UpstreamPrefix+"/", http.StatusPermanentRedirect))
+	}
 	mux.Handle("/", proxy)
 	return mux
 }
@@ -208,6 +222,9 @@ func (s *Server) statusPage(w http.ResponseWriter) {
 		fmt.Fprintf(w, "<tr><td>%s<td>%s", html.EscapeString(st.Spec.Name), st.State)
 	}
 	fmt.Fprint(w, "</table>")
+	if s.UpstreamPrefix != "" {
+		fmt.Fprintf(w, `<p><a href="%s/">llama.cpp web ui</a>`, html.EscapeString(s.UpstreamPrefix))
+	}
 }
 
 // ListenUnix listens on a unix socket, replacing a stale one.
