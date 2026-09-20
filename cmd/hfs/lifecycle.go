@@ -216,6 +216,22 @@ func (a *app) downCmd() *cobra.Command {
 	}
 }
 
+func (a *app) devmodeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:       "devmode on|off",
+		Short:     "Toggle Dev Mode (only `--ssh` needs it); this restarts the Space",
+		Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		ValidArgs: []string{"on", "off"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.hf.SetDevMode(cmd.Context(), args[0] == "on"); err != nil {
+				return err
+			}
+			fmt.Printf("%s: dev mode %s\n", a.hf.Space(), args[0])
+			return nil
+		},
+	}
+}
+
 func (a *app) statusCmd() *cobra.Command {
 	var noRemote bool
 	cmd := &cobra.Command{

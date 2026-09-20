@@ -68,6 +68,7 @@ func main() {
 	root.AddCommand(
 		a.upCmd(),
 		a.downCmd(),
+		a.devmodeCmd(),
 		a.statusCmd(),
 		a.infoCmd(),
 		a.sshCmd(),

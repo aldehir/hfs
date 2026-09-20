@@ -142,7 +142,10 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		cmd.Env = append(cmd.Env, "TERM="+req.Term)
 		// pty.Start makes the command a session leader on the new terminal,
 		// so its pid doubles as the process group to signal.
-		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{Rows: max(req.Rows, 24), Cols: max(req.Cols, 80)})
+		if req.Rows == 0 || req.Cols == 0 {
+			req.Rows, req.Cols = 24, 80
+		}
+		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{Rows: req.Rows, Cols: req.Cols})
 		if err == nil {
 			defer ptmx.Close()
 			stdin, outputs[ChanStdout], hangup = ptmx, ptmx, syscall.SIGHUP
