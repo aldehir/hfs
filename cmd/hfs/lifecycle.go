@@ -180,11 +180,11 @@ func (a *app) waitRunning(ctx context.Context, timeout time.Duration, leaveFirst
 			fmt.Printf("stage: %s\n", rt.Stage)
 			last = rt.Stage
 		}
-		// Dev Mode is what gives us SSH, so RUNNING alone isn't enough.
 		if rt.Stage != "RUNNING" {
 			leaveFirst = false
 		}
-		if rt.Stage == "RUNNING" && rt.DevMode && (!leaveFirst || time.Now().After(grace)) {
+		// Over SSH, RUNNING alone isn't enough: Dev Mode is what provides it.
+		if rt.Stage == "RUNNING" && (rt.DevMode || !a.useSSH()) && (!leaveFirst || time.Now().After(grace)) {
 			return nil
 		}
 		if failedStages[rt.Stage] && strings.Contains(rt.ErrorMessage, "Scheduling failure") {
