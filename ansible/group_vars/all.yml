@@ -7,7 +7,8 @@ hfsd_persist: /data/hfs/hfsd
 hfsd_managed: true
 
 # llama.cpp source and build. The tree stays container-local for fast builds;
-# ccache and finished binaries persist on /data.
+# finished binaries persist on /data. Keep small-file caches (ccache) off /data:
+# it's a bucket mount, and they slow the Space's startup.
 llama_repo: ggml-org/llama.cpp
 llama_ref: master
 llama_pr: ~
@@ -20,11 +21,8 @@ llama_cmake_flags:
   - -DCMAKE_CUDA_ARCHITECTURES=89
   - -DBUILD_SHARED_LIBS=OFF
 llama_build_cache: /data/builds
-llama_build_env:
-  CCACHE_DIR: /data/.ccache
-  CMAKE_C_COMPILER_LAUNCHER: ccache
-  CMAKE_CXX_COMPILER_LAUNCHER: ccache
-  CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+# Extra environment for the build job.
+llama_build_env: {}
 
 # llama-server
 model: ~

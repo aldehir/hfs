@@ -107,7 +107,7 @@ goes to `ansible-playbook` (`-- -v`, `-- --check`, `-- -e key=value`).
 
 - Changing only server args: `hfs provision --tags server` (seconds).
 - Finished builds are cached in `/data/builds`, so a fresh container restores
-  the binaries instead of recompiling. ccache lives on `/data` too.
+  the binaries instead of recompiling.
 - Hacking on the remote checkout (`~/llama.cpp`): `hfs provision --no-update`
   builds the tree as-is. A dirty tree installs to `builds/dirty` and skips the
   cache. Without `--no-update`, provisioning refuses to touch a dirty tree.
@@ -151,7 +151,7 @@ services**; services come back, jobs don't, so a running job blocks an upgrade.
 ~/llama.cpp         source + build tree (container-local)
 /data/hfs/hfsd      boot copy of hfsd
 /data/builds        build cache      /data/cache   models
-/data/bench         bench results    /data/.ccache
+/data/bench         bench results
 ```
 
 Everything outside `/data` is gone when the Space restarts; `hfs up`
