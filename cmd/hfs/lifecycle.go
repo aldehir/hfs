@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,8 +35,13 @@ var failedStages = map[string]bool{
 	"DELETING":      true,
 }
 
+var errNoCapacity = errors.New("no hardware capacity")
+
+const retryDelay = 2 * time.Minute
+
 func (a *app) upCmd() *cobra.Command {
 	var (
+		retries     int
 		hardware    string
 		sleep       string
 		noProvision bool
@@ -100,8 +106,26 @@ func (a *app) upCmd() *cobra.Command {
 				}
 			}
 
-			if err := a.waitRunning(ctx, timeout, restart); err != nil {
-				return err
+			// Restarting gives up the GPU, and on scarce hardware the Space
+			// can fail to get one back. Only another restart fixes that.
+			for attempt := 1; ; attempt++ {
+				err := a.waitRunning(ctx, timeout, restart)
+				if err == nil {
+					break
+				}
+				if !errors.Is(err, errNoCapacity) || attempt > retries {
+					return err
+				}
+				fmt.Printf("no hardware capacity; retrying in %s (%d/%d)\n", retryDelay, attempt, retries)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(retryDelay):
+				}
+				if err := a.hf.Restart(ctx, false); err != nil {
+					return err
+				}
+				restart = true
 			}
 			if a.useSSH() {
 				target, err := a.target(ctx)
@@ -132,6 +156,7 @@ func (a *app) upCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sleep, "sleep", "", "idle sleep time (e.g. 30m, 1h, never)")
 	cmd.Flags().BoolVar(&restart, "restart", false, "restart even if running (same image; wipes the container)")
 	cmd.Flags().BoolVar(&rebuild, "rebuild", false, "factory reboot: rebuild the image from the Space repo's HEAD, then restart (a Dev Mode Space ignores pushes until this)")
+	cmd.Flags().IntVar(&retries, "retries", 10, "restarts to attempt when the Space can't get hardware")
 	cmd.Flags().BoolVar(&noProvision, "no-provision", false, "bring the Space up without running ansible")
 	cmd.Flags().DurationVar(&timeout, "timeout", 20*time.Minute, "how long to wait for the Space to reach RUNNING")
 	opts.bind(cmd)
@@ -161,6 +186,9 @@ func (a *app) waitRunning(ctx context.Context, timeout time.Duration, leaveFirst
 		}
 		if rt.Stage == "RUNNING" && rt.DevMode && (!leaveFirst || time.Now().After(grace)) {
 			return nil
+		}
+		if failedStages[rt.Stage] && strings.Contains(rt.ErrorMessage, "Scheduling failure") {
+			return fmt.Errorf("%w: %s", errNoCapacity, rt.ErrorMessage)
 		}
 		if failedStages[rt.Stage] {
 			return fmt.Errorf("space is in %s: %s (see `hfs logs run` / `hfs logs build-image`)", rt.Stage, rt.ErrorMessage)
