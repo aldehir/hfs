@@ -1,0 +1,65 @@
+- name: Require a model
+  ansible.builtin.assert:
+    that: model is string and model | length > 0
+    fail_msg: The profile must set `model` (a -hf spec like org/repo:quant).
+
+- name: Resolve the current build
+  ansible.builtin.command: readlink -f {{ hfs_home }}/current
+  register: server_build
+  changed_when: false
+
+- name: Read build info
+  ansible.builtin.slurp:
+    src: "{{ server_build.stdout }}/build.json"
+  register: build_info_raw
+
+# The command names the resolved build, so a new build, model, or argument
+# changes the spec and hfsd replaces the running server. Otherwise it's a no-op.
+- name: Run llama-server
+  ansible.builtin.command:
+    argv: "{{ [hfsd, 'run', 'llama-server', '--restart', 'always', '--replace'] + server_env_args + ['--', server_build.stdout + '/llama-server'] + server_argv }}"
+  register: server_run
+  changed_when: server_run.stdout_lines[0] != 'unchanged'
+
+- name: Wait for llama-server to be healthy (follow with `hfs logs -f`)
+  block:
+    # Short polls: the SSH gateway drops sessions that stay silent for 5 minutes.
+    - name: Poll /health
+      ansible.builtin.shell: |
+        for _ in {1..20}; do
+          curl -fsS -o /dev/null http://{{ server_host }}:{{ server_port }}/health && exit 0
+          state=$({{ hfsd }} status llama-server)
+          [[ "$state" == running* || "$state" == backoff* ]] || { echo "llama-server is $state"; exit 1; }
+          sleep 3
+        done
+        exit 75
+      args:
+        executable: /bin/bash
+      register: server_health
+      changed_when: false
+      failed_when: server_health.rc != 0
+      until: server_health.rc != 75
+      retries: "{{ (server_health_timeout / 60) | int }}"
+      delay: 0
+  rescue:
+    - name: Read server log
+      ansible.builtin.command: "{{ hfsd }} logs llama-server -n 40"
+      register: server_tail
+      changed_when: false
+
+    - name: Report server failure
+      ansible.builtin.fail:
+        msg: "{{ server_tail.stdout }}"
+
+- name: Record provisioning state
+  ansible.builtin.copy:
+    content: "{{ build_info_raw.content | b64decode | from_json | combine(server_state) | to_nice_json }}"
+    dest: "{{ hfs_home }}/state.json"
+    mode: "0644"
+  vars:
+    server_state:
+      profile: "{{ profile | default('') }}"
+      model: "{{ model }}"
+      server_args: "{{ server_argv }}"
+      provisioned_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  changed_when: false

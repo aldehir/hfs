@@ -1,0 +1,131 @@
+- name: Clone llama.cpp
+  ansible.builtin.command: git clone https://github.com/{{ llama_repo }}.git {{ llama_src }}
+  args:
+    creates: "{{ llama_src }}/.git"
+
+- name: Update llama.cpp checkout
+  when: llama_update | bool
+  block:
+    - name: Check for local changes
+      ansible.builtin.command: git status --porcelain --untracked-files=no
+      args:
+        chdir: "{{ llama_src }}"
+      register: llama_dirty
+      changed_when: false
+
+    - name: Refuse to clobber local changes
+      ansible.builtin.fail:
+        msg: >-
+          {{ llama_src }} has uncommitted changes. Commit or stash them, or
+          pass --no-update to build the checkout as-is.
+      when: llama_dirty.stdout | trim | length > 0
+
+    - name: Fetch {{ llama_fetch_ref }} from {{ llama_repo }}
+      ansible.builtin.command: git fetch https://github.com/{{ llama_repo }}.git {{ llama_fetch_ref }}
+      args:
+        chdir: "{{ llama_src }}"
+      changed_when: false
+
+    - name: Check out fetched commit
+      ansible.builtin.shell: |
+        before=$(git rev-parse HEAD)
+        git checkout --quiet --detach FETCH_HEAD
+        [[ "$before" != "$(git rev-parse HEAD)" ]] && echo changed || true
+      args:
+        chdir: "{{ llama_src }}"
+        executable: /bin/bash
+      register: llama_checkout
+      changed_when: "'changed' in llama_checkout.stdout"
+
+- name: Resolve commit
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ llama_src }}"
+  register: llama_head
+  changed_when: false
+
+- name: Check for uncommitted changes
+  ansible.builtin.command: git status --porcelain --untracked-files=no
+  args:
+    chdir: "{{ llama_src }}"
+  register: llama_status
+  changed_when: false
+
+# Builds are keyed by commit + cmake flags. A dirty tree has no stable key, so
+# it always rebuilds in place and never touches the cache.
+- name: Set build facts
+  ansible.builtin.set_fact:
+    llama_sha: "{{ llama_head.stdout }}"
+    llama_is_dirty: "{{ llama_status.stdout | trim | length > 0 }}"
+    llama_build_key: "{{ llama_head.stdout[:12] }}-{{ (llama_cmake_flags + llama_targets) | join(' ') | hash('sha1') | truncate(8, true, '') }}"
+
+- name: Set install paths
+  ansible.builtin.set_fact:
+    llama_bin: "{{ hfs_home }}/builds/{{ 'dirty' if llama_is_dirty else llama_build_key }}"
+    llama_cached: "{{ llama_build_cache }}/{{ llama_build_key }}"
+
+- name: Check for an installed build
+  ansible.builtin.stat:
+    path: "{{ llama_bin }}/llama-server"
+  register: llama_installed
+
+- name: Check the build cache
+  ansible.builtin.stat:
+    path: "{{ llama_cached }}/llama-server"
+  register: llama_cache_hit
+
+- name: Set build plan
+  ansible.builtin.set_fact:
+    llama_needs_build: "{{ llama_is_dirty or not (llama_installed.stat.exists or llama_cache_hit.stat.exists) }}"
+    llama_needs_restore: "{{ not llama_is_dirty and not llama_installed.stat.exists and llama_cache_hit.stat.exists }}"
+
+- name: Restore build {{ llama_build_key }} from cache
+  ansible.builtin.shell: |
+    mkdir -p {{ llama_bin }} && cp -a {{ llama_cached }}/. {{ llama_bin }}/
+  when: llama_needs_restore
+
+- name: Build llama.cpp
+  when: llama_needs_build
+  block:
+    # Runs under hfsd so a dropped SSH connection doesn't kill the build;
+    # re-running the play re-attaches to it.
+    - name: Configure and compile {{ llama_targets | join(', ') }} (follow with `hfs logs build -f`)
+      ansible.builtin.command:
+        argv: "{{ [hfsd, 'run', 'build', '--replace', '--dir', llama_src, '--', 'bash', '-ec', build_script] }}"
+      vars:
+        build_script: |
+          export PATH=/usr/local/cuda/bin:$PATH
+          {% for key, value in llama_build_env.items() %}
+          export {{ key }}={{ value | quote }}
+          {% endfor %}
+          cmake -B build -G Ninja {{ llama_cmake_flags | map('quote') | join(' ') }}
+          cmake --build build -t {{ llama_targets | join(' ') }}
+
+    - name: Wait for the build
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/wait.yml"
+      vars:
+        wait_name: build
+
+    - name: Install binaries
+      ansible.builtin.shell: |
+        rm -rf {{ llama_bin }} && mkdir -p {{ llama_bin }}
+        cp -a {{ llama_targets | map('regex_replace', '^', 'build/bin/') | join(' ') }} {{ llama_bin }}/
+      args:
+        chdir: "{{ llama_src }}"
+
+    - name: Record build info
+      ansible.builtin.copy:
+        content: "{{ {'llama_repo': llama_repo, 'llama_ref': ('pr/%s' % llama_pr) if llama_pr else llama_ref, 'llama_sha': llama_sha, 'dirty': llama_is_dirty, 'cmake_flags': llama_cmake_flags} | to_nice_json }}"
+        dest: "{{ llama_bin }}/build.json"
+        mode: "0644"
+
+    - name: Save build {{ llama_build_key }} to cache
+      ansible.builtin.shell: |
+        mkdir -p {{ llama_cached }} && cp -a {{ llama_bin }}/. {{ llama_cached }}/
+      when: not llama_is_dirty
+
+- name: Point current at {{ llama_bin | basename }}
+  ansible.builtin.file:
+    src: "{{ llama_bin }}"
+    dest: "{{ hfs_home }}/current"
+    state: link

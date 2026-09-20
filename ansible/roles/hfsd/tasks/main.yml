@@ -1,0 +1,70 @@
+- name: Create hfs directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ hfs_home }}/bin"
+    - "{{ hfs_logs }}"
+
+# `hfs` uploads the binary to /data before the play; this installs it.
+- name: Compare installed hfsd with {{ hfsd_persist }}
+  ansible.builtin.shell: |
+    want=$(sha256sum < {{ hfsd_persist }})
+    have=$(sha256sum < {{ hfsd }} 2>/dev/null || true)
+    [[ "$want" == "$have" ]] && echo current || echo outdated
+  args:
+    executable: /bin/bash
+  register: hfsd_installed
+  changed_when: false
+
+- name: Check for a running hfsd
+  ansible.builtin.command: "{{ hfsd }} ps --json"
+  register: hfsd_ps
+  changed_when: false
+  failed_when: false
+
+# Shutting down takes the managed processes with it. Services come back when
+# hfsd restarts; a job would be lost, so don't upgrade underneath one.
+- name: Refuse to upgrade hfsd while a job is running
+  ansible.builtin.fail:
+    msg: >-
+      hfsd needs an upgrade, but these jobs are running: {{ hfsd_jobs | join(', ') }}.
+      Wait for them (`hfs logs NAME -f`) or stop them (`hfs ctl stop NAME`).
+  vars:
+    hfsd_jobs: >-
+      {{ hfsd_ps.stdout | from_json
+         | selectattr('state', 'in', ['running', 'backoff'])
+         | selectattr('spec.restart', 'equalto', 'never')
+         | map(attribute='spec.name') | list }}
+  when: hfsd_ps.rc == 0 and 'outdated' in hfsd_installed.stdout and hfsd_jobs | length > 0
+
+- name: Stop outdated hfsd
+  ansible.builtin.command: "{{ hfsd }} shutdown"
+  when: hfsd_ps.rc == 0 and 'outdated' in hfsd_installed.stdout
+
+- name: Install hfsd
+  ansible.builtin.shell: |
+    cp {{ hfsd_persist }} {{ hfsd }}.new && chmod 755 {{ hfsd }}.new && mv {{ hfsd }}.new {{ hfsd }}
+  when: "'outdated' in hfsd_installed.stdout"
+
+# When the entrypoint runs hfsd it restarts it on exit; otherwise start it
+# detached from this SSH session.
+- name: Start hfsd
+  ansible.builtin.shell: |
+    for _ in {1..10}; do
+      {{ hfsd }} ps >/dev/null 2>&1 && exit 0
+      sleep 1
+    done
+    setsid nohup {{ hfsd }} serve >> {{ hfs_logs }}/hfsd.log 2>&1 < /dev/null &
+    for _ in {1..10}; do
+      {{ hfsd }} ps >/dev/null 2>&1 && { echo started; exit 0; }
+      sleep 1
+    done
+    tail -n 20 {{ hfs_logs }}/hfsd.log
+    exit 1
+  args:
+    executable: /bin/bash
+  register: hfsd_start
+  changed_when: "'started' in hfsd_start.stdout"
+  when: hfsd_ps.rc != 0 or 'outdated' in hfsd_installed.stdout

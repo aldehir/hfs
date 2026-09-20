@@ -1,0 +1,6 @@
+- name: Provision llama.cpp on the Space
+  hosts: all
+  roles:
+    - { role: hfsd, tags: [always] }
+    - { role: llama_build, tags: [build] }
+    - { role: server, tags: [server] }

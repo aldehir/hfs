@@ -1,0 +1,246 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/aldehir/hfs/internal/hf"
+	"github.com/aldehir/hfs/internal/remote"
+	"github.com/spf13/cobra"
+)
+
+const (
+	remoteHfsd        = "/home/user/.hfs/bin/hfsd"
+	remoteHfsdPersist = "/data/hfs/hfsd"
+	defaultSession    = "dev"
+)
+
+type provisionOpts struct {
+	profile  string
+	tags     []string
+	repo     string
+	ref      string
+	pr       int
+	model    string
+	noUpdate bool
+}
+
+func (o *provisionOpts) bind(cmd *cobra.Command) {
+	f := cmd.Flags()
+	f.StringSliceVar(&o.tags, "tags", nil, "only run these stages (build, server)")
+	f.StringVar(&o.repo, "repo", "", "override llama.cpp repo (OWNER/REPO)")
+	f.StringVar(&o.ref, "ref", "", "override llama.cpp branch, tag, or commit")
+	f.IntVar(&o.pr, "pr", 0, "build this llama.cpp PR instead of a ref")
+	f.StringVar(&o.model, "model", "", "override the model (-hf spec)")
+	f.BoolVar(&o.noUpdate, "no-update", false, "build the remote checkout as-is, without fetching")
+}
+
+func (o *provisionOpts) vars() map[string]any {
+	v := map[string]any{}
+	if o.repo != "" {
+		v["llama_repo"] = o.repo
+	}
+	if o.ref != "" {
+		v["llama_ref"] = o.ref
+	}
+	if o.pr != 0 {
+		v["llama_pr"] = o.pr
+	}
+	if o.model != "" {
+		v["model"] = o.model
+	}
+	if o.noUpdate {
+		v["llama_update"] = false
+	}
+	return v
+}
+
+// passthrough splits args at "--": everything after it goes to the wrapped command.
+func passthrough(cmd *cobra.Command, args []string) (before, after []string) {
+	if i := cmd.ArgsLenAtDash(); i >= 0 {
+		return args[:i], args[i:]
+	}
+	return args, nil
+}
+
+func (a *app) playbook(ctx context.Context, name string, o provisionOpts, extraArgs []string) error {
+	profile, err := a.cfg.ProfilePath(o.profile)
+	if err != nil {
+		return err
+	}
+	target, err := a.target(ctx)
+	if err != nil {
+		return err
+	}
+	vars := o.vars()
+	vars["profile"] = strings.TrimSuffix(filepath.Base(profile), ".yml")
+	vars["results_dir"] = a.cfg.ResultsDir
+	if _, err := os.Stat(a.cfg.HfsdBinary); err != nil {
+		return fmt.Errorf("hfsd binary not found (run `make`): %w", err)
+	}
+	// The copy on /data is what the Space's entrypoint launches at boot.
+	if uploaded, err := target.Upload(ctx, a.cfg.HfsdBinary, remoteHfsdPersist); err != nil {
+		return err
+	} else if uploaded {
+		fmt.Println("uploaded hfsd to", remoteHfsdPersist)
+	}
+	return target.Run(ctx, remote.Playbook{
+		Dir:       a.cfg.AnsibleDir,
+		Name:      name,
+		VarsFiles: []string{profile},
+		Vars:      vars,
+		Tags:      o.tags,
+		ExtraArgs: extraArgs,
+	})
+}
+
+func (a *app) provision(ctx context.Context, o provisionOpts) error {
+	return a.playbook(ctx, "provision.yml", o, nil)
+}
+
+func (a *app) provisionCmd() *cobra.Command {
+	var opts provisionOpts
+	cmd := &cobra.Command{
+		Use:   "provision [profile] [-- ansible-playbook args]",
+		Short: "Build llama.cpp and (re)start llama-server with ansible",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			args, extra := passthrough(cmd, args)
+			if len(args) > 1 {
+				return fmt.Errorf("accepts at most 1 profile, received %d", len(args))
+			}
+			if len(args) == 1 {
+				opts.profile = args[0]
+			}
+			return a.playbook(cmd.Context(), "provision.yml", opts, extra)
+		},
+	}
+	opts.bind(cmd)
+	cmd.AddCommand(&cobra.Command{
+		Use:   "profiles",
+		Short: "List available profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			names, err := a.cfg.Profiles()
+			if err != nil {
+				return err
+			}
+			for _, n := range names {
+				if n == a.cfg.Profile {
+					n += " (default)"
+				}
+				fmt.Println(n)
+			}
+			return nil
+		},
+	})
+	return cmd
+}
+
+func (a *app) benchCmd() *cobra.Command {
+	var opts provisionOpts
+	cmd := &cobra.Command{
+		Use:   "bench [profile] [-- ansible-playbook args]",
+		Short: "Run llama-bench on the Space and fetch the results",
+		Long: "Builds the profile's llama.cpp, stops llama-server to free the GPU, runs\n" +
+			"llama-bench, and fetches the JSON results. The server is left stopped;\n" +
+			"bring it back with `hfs provision --tags server`.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			args, extra := passthrough(cmd, args)
+			if len(args) > 1 {
+				return fmt.Errorf("accepts at most 1 profile, received %d", len(args))
+			}
+			if len(args) == 1 {
+				opts.profile = args[0]
+			}
+			return a.playbook(cmd.Context(), "bench.yml", opts, extra)
+		},
+	}
+	opts.bind(cmd)
+	cmd.Flags().Lookup("tags").Hidden = true
+	return cmd
+}
+
+func (a *app) sshCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ssh [-- command]",
+		Short: "Open a tmux session on the Space, or run a command",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, command := passthrough(cmd, args)
+			if len(command) == 0 {
+				command = []string{"tmux", "new", "-A", "-s", defaultSession}
+			}
+			return a.interactive(cmd.Context(), true, command...)
+		},
+	}
+}
+
+func (a *app) ctlCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "ctl [hfsd args]",
+		Short:              "Run the hfsd client on the Space (ps, restart llama-server, logs build -f, ...)",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				args = []string{"ps"}
+			}
+			return a.interactive(cmd.Context(), false, shellQuote(append([]string{remoteHfsd}, args...)))
+		},
+	}
+}
+
+func (a *app) interactive(ctx context.Context, tty bool, command ...string) error {
+	target, err := a.target(ctx)
+	if err != nil {
+		return err
+	}
+	c := target.SSH(ctx, tty, command...)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
+}
+
+func (a *app) logsCmd() *cobra.Command {
+	var (
+		follow bool
+		tail   int
+	)
+	cmd := &cobra.Command{
+		Use:   "logs [NAME|run|build-image]",
+		Short: "Show an hfsd process log (default llama-server; also build, bench, ...) or the Space's container logs",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := "llama-server"
+			if len(args) > 0 {
+				name = args[0]
+			}
+			switch name {
+			case "run", "build-image":
+				// The API stream stays open until interrupted.
+				return a.hf.Logs(cmd.Context(), name == "build-image", func(l hf.LogLine) {
+					fmt.Println(strings.TrimRight(l.Data, "\n"))
+				})
+			}
+			command := []string{remoteHfsd, "logs", name, "-n", strconv.Itoa(tail)}
+			if follow {
+				command = append(command, "-f")
+			}
+			return a.interactive(cmd.Context(), false, shellQuote(command))
+		},
+	}
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep streaming until the process finishes")
+	cmd.Flags().IntVarP(&tail, "tail", "n", 200, "lines from the end to start at (0 for everything)")
+	return cmd
+}
+
+// shellQuote joins argv into one string for the remote shell, since ssh
+// flattens its arguments.
+func shellQuote(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
+}

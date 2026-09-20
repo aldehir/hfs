@@ -1,0 +1,41 @@
+hfs_home: /home/user/.hfs
+hfs_logs: "{{ hfs_home }}/logs"
+hfsd: "{{ hfs_home }}/bin/hfsd"
+hfsd_persist: /data/hfs/hfsd
+
+# llama.cpp source and build. The tree stays container-local for fast builds;
+# ccache and finished binaries persist on /data.
+llama_repo: ggml-org/llama.cpp
+llama_ref: master
+llama_pr: ~
+llama_update: true
+llama_fetch_ref: "{{ 'pull/%s/head' % llama_pr if llama_pr else llama_ref }}"
+llama_src: /home/user/llama.cpp
+llama_targets: [llama-server, llama-bench]
+llama_cmake_flags:
+  - -DGGML_CUDA=ON
+  - -DCMAKE_CUDA_ARCHITECTURES=89
+  - -DBUILD_SHARED_LIBS=OFF
+llama_build_cache: /data/builds
+llama_build_env:
+  CCACHE_DIR: /data/.ccache
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+
+# llama-server
+model: ~
+server_host: 127.0.0.1
+server_port: 8080
+server_args: []
+server_env: {}
+server_env_defaults:
+  LLAMA_CACHE: /data/cache
+  HF_HOME: /data/.huggingface
+server_env_args: "{{ (server_env_defaults | combine(server_env)).items() | map('join', '=') | map('regex_replace', '^', '--env=') | list }}"
+server_argv: "{{ ['--host', server_host, '--port', server_port | string, '-hf', model] + (server_args | flatten | map('string') | list) }}"
+server_health_timeout: 1800
+
+# llama-bench
+bench_args: []
+bench_dir: /data/bench

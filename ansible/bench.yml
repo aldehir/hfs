@@ -1,0 +1,51 @@
+- name: Benchmark llama.cpp on the Space
+  hosts: all
+  vars:
+    bench_stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+  roles:
+    - hfsd
+    - llama_build
+  tasks:
+    - name: Stop llama-server to free the GPU
+      ansible.builtin.command: "{{ hfsd }} stop llama-server"
+      failed_when: false
+
+    - name: Set result path
+      ansible.builtin.set_fact:
+        bench_name: "{{ bench_stamp }}-{{ profile | default('adhoc') }}-{{ llama_sha[:12] }}.json"
+
+    - name: Create results directory
+      ansible.builtin.file:
+        path: "{{ bench_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Run llama-bench
+      ansible.builtin.command:
+        argv: "{{ [hfsd, 'run', 'bench', '--replace'] + server_env_args + ['--', 'bash', '-c', bench_script, bench_bin, '-hf', model, '-o', 'json'] + (bench_args | flatten | map('string') | list) }}"
+      vars:
+        bench_bin: "{{ hfs_home }}/current/llama-bench"
+        # JSON goes to the result file; progress on stderr goes to the hfsd log.
+        bench_script: exec "$0" "$@" > {{ (bench_dir + '/' + bench_name) | quote }}
+
+    - name: Wait for llama-bench
+      ansible.builtin.include_tasks: tasks/wait.yml
+      vars:
+        wait_name: bench
+
+    - name: Fetch results
+      ansible.builtin.fetch:
+        src: "{{ bench_dir }}/{{ bench_name }}"
+        dest: "{{ results_dir }}/"
+        flat: true
+
+    - name: Summarize
+      ansible.builtin.command: >-
+        python3 -c "import json,sys; [print(f\"{r['model_type']:<28} p={r['n_prompt']:<6} n={r['n_gen']:<6} {r['avg_ts']:>10.2f} t/s\") for r in json.load(open(sys.argv[1]))]"
+        {{ bench_dir }}/{{ bench_name }}
+      register: bench_summary
+      changed_when: false
+
+    - name: Results
+      ansible.builtin.debug:
+        msg: "{{ bench_summary.stdout_lines }}"

@@ -1,0 +1,9 @@
+# Short polls: the SSH gateway drops sessions that stay silent for 5 minutes.
+- name: Wait for {{ wait_name }} (follow with `hfs logs {{ wait_name }} -f`)
+  ansible.builtin.command: "{{ hfsd }} wait {{ wait_name }} --timeout 60s"
+  register: wait_result
+  changed_when: false
+  failed_when: wait_result.rc != 0
+  until: wait_result.rc != 75
+  retries: 720
+  delay: 0
