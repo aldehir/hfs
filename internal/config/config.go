@@ -24,7 +24,8 @@ type Config struct {
 	HfsdBinary  string `yaml:"hfsd_binary"`
 	SSH         SSH    `yaml:"ssh"`
 
-	dir string
+	dir  string
+	path string
 }
 
 // Load reads the config from path, or the first of $HFS_CONFIG, ./hfs.yml and
@@ -60,7 +61,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: space is required", path)
 	}
 
-	c.dir, _ = filepath.Abs(filepath.Dir(path))
+	c.path, _ = filepath.Abs(path)
+	c.dir = filepath.Dir(c.path)
 	c.AnsibleDir = c.resolve(c.AnsibleDir)
 	c.ProfilesDir = c.resolve(c.ProfilesDir)
 	c.ResultsDir = c.resolve(c.ResultsDir)
@@ -97,6 +99,21 @@ func (c *Config) resolve(p string) string {
 		return p
 	}
 	return filepath.Join(c.dir, p)
+}
+
+// Path is the config file that was loaded.
+func (c *Config) Path() string { return c.path }
+
+// HfsdTokenPath is where the hfsd token lives, next to the config file.
+func (c *Config) HfsdTokenPath() string { return filepath.Join(c.dir, ".hfsd-token") }
+
+// HfsdToken returns $HFSD_TOKEN, falling back to the token file.
+func (c *Config) HfsdToken() string {
+	if t := os.Getenv("HFSD_TOKEN"); t != "" {
+		return t
+	}
+	b, _ := os.ReadFile(c.HfsdTokenPath())
+	return strings.TrimSpace(string(b))
 }
 
 // ProfilePath returns the vars file for the named profile, falling back to

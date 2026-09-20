@@ -1,3 +1,4 @@
 bin/
 results/
 .env*
+.hfsd-token

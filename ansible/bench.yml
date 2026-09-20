@@ -3,7 +3,7 @@
   vars:
     bench_stamp: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
   roles:
-    - hfsd
+    - { role: hfsd, when: hfsd_managed }
     - llama_build
   tasks:
     - name: Stop llama-server to free the GPU

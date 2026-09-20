@@ -71,7 +71,7 @@ func main() {
 }
 
 func serveCmd(home *string) *cobra.Command {
-	var listen, upstream string
+	var listen, upstream, persist string
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the daemon",
@@ -81,7 +81,17 @@ func serveCmd(home *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			srv := &daemon.Server{Manager: mgr, Upstream: upstream, Quit: make(chan struct{})}
+			srv := &daemon.Server{
+				Manager:  mgr,
+				Upstream: upstream,
+				Token:    remoteToken(persist),
+				Persist:  persist,
+				Quit:     make(chan struct{}),
+				Reexec:   make(chan string, 1),
+			}
+			if srv.Token == "" {
+				log.Print("remote api disabled: no $HFSD_TOKEN or token file")
+			}
 
 			sock, err := daemon.ListenUnix(filepath.Join(*home, "hfsd.sock"))
 			if err != nil {
@@ -105,19 +115,35 @@ func serveCmd(home *string) *cobra.Command {
 				log.Printf("restore: %v", err)
 			}
 
+			var reexec string
 			select {
 			case <-cmd.Context().Done():
 			case <-srv.Quit:
+			case reexec = <-srv.Reexec:
 			}
 			log.Print("shutting down")
 			mgr.Shutdown()
 			daemon.Shutdown(context.Background(), control, public)
+			if reexec != "" {
+				return syscall.Exec(reexec, os.Args, os.Environ())
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", ":8000", "public http address")
+	cmd.Flags().StringVar(&persist, "persist", "/data/hfs/hfsd", "persistent copy of the binary, updated on upgrade")
 	cmd.Flags().StringVar(&upstream, "upstream", "127.0.0.1:8080", "llama-server address to proxy to")
 	return cmd
+}
+
+// remoteToken returns $HFSD_TOKEN (a Space secret), falling back to a token
+// file next to the persistent binary.
+func remoteToken(persist string) string {
+	if t := os.Getenv("HFSD_TOKEN"); t != "" {
+		return t
+	}
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(persist), "token"))
+	return strings.TrimSpace(string(b))
 }
 
 func runCmd(client func() *daemon.Client) *cobra.Command {

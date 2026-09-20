@@ -2,6 +2,9 @@ hfs_home: /home/user/.hfs
 hfs_logs: "{{ hfs_home }}/logs"
 hfsd: "{{ hfs_home }}/bin/hfsd"
 hfsd_persist: /data/hfs/hfsd
+# Over SSH the hfsd role installs and starts hfsd. Over the hfsd connection
+# `hfs` upgrades it through its API instead.
+hfsd_managed: true
 
 # llama.cpp source and build. The tree stays container-local for fast builds;
 # ccache and finished binaries persist on /data.

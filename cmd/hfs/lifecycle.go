@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aldehir/hfs/internal/daemon"
 	"github.com/aldehir/hfs/internal/hf"
 	"github.com/spf13/cobra"
 )
@@ -80,7 +82,7 @@ func (a *app) upCmd() *cobra.Command {
 					return err
 				}
 			}
-			if !rt.DevMode {
+			if a.useSSH() && !rt.DevMode {
 				fmt.Println("enabling dev mode")
 				if err := a.hf.SetDevMode(ctx, true); err != nil {
 					return err
@@ -101,13 +103,24 @@ func (a *app) upCmd() *cobra.Command {
 			if err := a.waitRunning(ctx, timeout, restart); err != nil {
 				return err
 			}
-			target, err := a.target(ctx)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("waiting for ssh (%s)\n", target)
-			if err := target.WaitSSH(ctx, 5*time.Minute); err != nil {
-				return err
+			if a.useSSH() {
+				target, err := a.target(ctx)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("waiting for ssh (%s)\n", target)
+				if err := target.WaitSSH(ctx, 5*time.Minute); err != nil {
+					return err
+				}
+			} else {
+				rc, err := a.remote(ctx)
+				if err != nil {
+					return err
+				}
+				fmt.Println("waiting for hfsd")
+				if err := a.waitHfsd(ctx, rc); err != nil {
+					return err
+				}
 			}
 			if noProvision {
 				return nil
@@ -205,10 +218,10 @@ func (a *app) statusCmd() *cobra.Command {
 			}
 
 			row("server", a.health(ctx, info.Host))
-			if noRemote || !rt.DevMode {
+			if noRemote {
 				return nil
 			}
-			out, err := a.targetFor(info).Output(ctx, "cat "+stateFile+" 2>/dev/null")
+			out, err := a.readRemote(ctx, info, stateFile)
 			if err != nil || strings.TrimSpace(out) == "" {
 				row("provisioned", "no")
 				return nil
@@ -231,8 +244,22 @@ func (a *app) statusCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&noRemote, "no-remote", false, "skip reading provisioning state over ssh")
+	cmd.Flags().BoolVar(&noRemote, "no-remote", false, "skip reading provisioning state from the Space")
 	return cmd
+}
+
+// readRemote returns a remote file's contents over the active transport.
+func (a *app) readRemote(ctx context.Context, info *hf.Info, path string) (string, error) {
+	if a.useSSH() {
+		return a.targetFor(info).Output(ctx, "cat "+path+" 2>/dev/null")
+	}
+	rc, err := a.remote(ctx)
+	if err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	_, err = rc.Exec(ctx, daemon.ExecRequest{Argv: []string{"cat", path}}, nil, &out, io.Discard)
+	return out.String(), err
 }
 
 // health reports llama-server's state through the Space's public host. nginx

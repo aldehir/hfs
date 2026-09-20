@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 
 type app struct {
 	configPath string
+	ssh        bool
 	cfg        *config.Config
 	hf         *hf.Client
 }
@@ -62,6 +64,7 @@ func main() {
 		PersistentPreRunE: a.init,
 	}
 	root.PersistentFlags().StringVar(&a.configPath, "config", "", "path to hfs.yml")
+	root.PersistentFlags().BoolVar(&a.ssh, "ssh", false, "reach the Space over Dev Mode SSH instead of hfsd")
 	root.AddCommand(
 		a.upCmd(),
 		a.downCmd(),
@@ -72,9 +75,17 @@ func main() {
 		a.benchCmd(),
 		a.logsCmd(),
 		a.ctlCmd(),
+		a.execCmd(),
+		a.putCmd(),
+		a.fetchCmd(),
+		a.tokenCmd(),
 	)
 
 	if err := root.ExecuteContext(ctx); err != nil {
+		var ee exitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.code)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

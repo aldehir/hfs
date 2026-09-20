@@ -31,8 +31,14 @@ type applyResponse struct {
 type Server struct {
 	Manager  *Manager
 	Upstream string
+	// Token guards the remote API; empty disables it.
+	Token string
+	// Persist is where an upgrade leaves a copy of the binary for the next boot.
+	Persist string
 	// Quit is closed by the shutdown endpoint.
 	Quit chan struct{}
+	// Reexec receives the path of a new binary to exec into.
+	Reexec chan string
 }
 
 // Control returns the API served on the unix socket.
@@ -181,8 +187,16 @@ func (s *Server) Public() http.Handler {
 		s.statusPage(w)
 	}
 
+	// llama-server has no business seeing the hfsd token.
+	director := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		director(r)
+		r.Header.Del(TokenHeader)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { s.statusPage(w) })
+	mux.Handle(RemotePrefix+"/", s.Remote())
 	mux.Handle("/", proxy)
 	return mux
 }

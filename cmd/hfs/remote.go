@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/aldehir/hfs/internal/daemon"
 	"github.com/aldehir/hfs/internal/hf"
 	"github.com/aldehir/hfs/internal/remote"
 	"github.com/spf13/cobra"
@@ -72,30 +75,72 @@ func (a *app) playbook(ctx context.Context, name string, o provisionOpts, extraA
 	if err != nil {
 		return err
 	}
-	target, err := a.target(ctx)
-	if err != nil {
-		return err
+	if _, err := os.Stat(a.cfg.HfsdBinary); err != nil {
+		return fmt.Errorf("hfsd binary not found (run `make`): %w", err)
 	}
 	vars := o.vars()
 	vars["profile"] = strings.TrimSuffix(filepath.Base(profile), ".yml")
 	vars["results_dir"] = a.cfg.ResultsDir
-	if _, err := os.Stat(a.cfg.HfsdBinary); err != nil {
-		return fmt.Errorf("hfsd binary not found (run `make`): %w", err)
-	}
-	// The copy on /data is what the Space's entrypoint launches at boot.
-	if uploaded, err := target.Upload(ctx, a.cfg.HfsdBinary, remoteHfsdPersist); err != nil {
-		return err
-	} else if uploaded {
-		fmt.Println("uploaded hfsd to", remoteHfsdPersist)
-	}
-	return target.Run(ctx, remote.Playbook{
+	pb := remote.Playbook{
 		Dir:       a.cfg.AnsibleDir,
 		Name:      name,
 		VarsFiles: []string{profile},
 		Vars:      vars,
 		Tags:      o.tags,
 		ExtraArgs: extraArgs,
-	})
+	}
+
+	if a.useSSH() {
+		target, err := a.target(ctx)
+		if err != nil {
+			return err
+		}
+		// The copy on /data is what the Space's entrypoint launches at boot;
+		// the hfsd role installs and starts it.
+		if uploaded, err := target.Upload(ctx, a.cfg.HfsdBinary, remoteHfsdPersist); err != nil {
+			return err
+		} else if uploaded {
+			fmt.Println("uploaded hfsd to", remoteHfsdPersist)
+		}
+		return target.Run(ctx, pb)
+	}
+
+	// hfsd is already running (it's how we get in), so it upgrades itself
+	// and the hfsd role has nothing to do.
+	rc, err := a.remote(ctx)
+	if err != nil {
+		return err
+	}
+	if upgraded, err := rc.Upgrade(ctx, a.cfg.HfsdBinary, false); err != nil {
+		return fmt.Errorf("upgrade hfsd: %w", err)
+	} else if upgraded {
+		fmt.Println("upgraded hfsd")
+		if err := a.waitHfsd(ctx, rc); err != nil {
+			return err
+		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	vars["hfsd_managed"] = false
+	return pb.RunHfsd(ctx, a.hf.Space(), self, a.cfg.Path())
+}
+
+// waitHfsd waits for hfsd to come back after it re-execs into a new binary.
+func (a *app) waitHfsd(ctx context.Context, rc *daemon.RemoteClient) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	for {
+		if _, err := rc.Version(ctx); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("hfsd did not come back after upgrading")
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func (a *app) provision(ctx context.Context, o provisionOpts) error {
@@ -187,7 +232,7 @@ func (a *app) ctlCmd() *cobra.Command {
 			if len(args) == 0 {
 				args = []string{"ps"}
 			}
-			return a.interactive(cmd.Context(), false, shellQuote(append([]string{remoteHfsd}, args...)))
+			return a.run(cmd.Context(), false, append([]string{remoteHfsd}, args...)...)
 		},
 	}
 }
@@ -227,7 +272,7 @@ func (a *app) logsCmd() *cobra.Command {
 			if follow {
 				command = append(command, "-f")
 			}
-			return a.interactive(cmd.Context(), false, shellQuote(command))
+			return a.run(cmd.Context(), false, command...)
 		},
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep streaming until the process finishes")

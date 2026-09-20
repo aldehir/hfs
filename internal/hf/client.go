@@ -85,6 +85,8 @@ func Token() string {
 
 func (c *Client) Space() string { return c.space }
 
+func (c *Client) Token() string { return c.token }
+
 func (c *Client) url(suffix string) string {
 	return endpoint + "/api/spaces/" + c.space + suffix
 }
@@ -171,6 +173,11 @@ func (c *Client) RequestHardware(ctx context.Context, flavor string) error {
 
 func (c *Client) SetDevMode(ctx context.Context, enabled bool) error {
 	return c.do(ctx, http.MethodPost, "/dev-mode", map[string]bool{"enabled": enabled}, nil)
+}
+
+// SetSecret creates or updates a Space secret. The Space restarts to pick it up.
+func (c *Client) SetSecret(ctx context.Context, key, value string) error {
+	return c.do(ctx, http.MethodPost, "/secrets", map[string]string{"key": key, "value": value}, nil)
 }
 
 // Logs streams the Space's build or run logs until ctx is cancelled or the

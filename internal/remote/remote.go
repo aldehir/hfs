@@ -107,7 +107,8 @@ type Playbook struct {
 	ExtraArgs []string
 }
 
-// Run executes the playbook against the target, streaming ansible's output.
+// Run executes the playbook against the target over SSH, streaming ansible's
+// output.
 func (t Target) Run(ctx context.Context, p Playbook) error {
 	args := []string{
 		"-i", t.Host + ",",
@@ -117,6 +118,17 @@ func (t Target) Run(ctx context.Context, p Playbook) error {
 	if t.IdentityFile != "" {
 		args = append(args, "--private-key", t.IdentityFile)
 	}
+	return p.run(ctx, args, nil)
+}
+
+// RunHfsd executes the playbook through the hfsd connection plugin, which
+// calls back into the hfs binary for every command and file transfer.
+func (p Playbook) RunHfsd(ctx context.Context, space, hfsBin, configPath string) error {
+	args := []string{"-i", space + ",", "-c", "hfsd"}
+	return p.run(ctx, args, []string{"HFS_BIN=" + hfsBin, "HFS_CONFIG=" + configPath})
+}
+
+func (p Playbook) run(ctx context.Context, args, env []string) error {
 	for _, f := range p.VarsFiles {
 		args = append(args, "-e", "@"+f)
 	}
@@ -136,6 +148,7 @@ func (t Target) Run(ctx context.Context, p Playbook) error {
 	cmd := exec.CommandContext(ctx, "ansible-playbook", args...)
 	cmd.Dir = p.Dir
 	cmd.Env = append(os.Environ(), "ANSIBLE_CONFIG="+filepath.Join(p.Dir, "ansible.cfg"))
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
